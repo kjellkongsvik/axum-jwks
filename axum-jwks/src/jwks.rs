@@ -15,7 +15,7 @@ use crate::TokenError;
 ///
 /// The container can be used to validate any JWT that identifies a known key
 /// through the `kid` attribute in the token's header.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Jwks {
     keys: HashMap<String, Jwk>,
 }
@@ -27,26 +27,12 @@ struct Oid {
 }
 
 impl Jwks {
-    /// Pull a JSON Web Key Set from a specific authority.
-    ///
-    /// # Arguments
-    /// * `oidc_url` - The url with Openid-configuration.
-    /// * `audience` - The identifier of the consumer of the JWT. This will be
-    ///   matched against the `aud` claim from the token.
-    ///
-    /// # Return Value
-    /// The information needed to decode JWTs using any of the keys specified in
-    /// the authority's JWKS.
-    pub async fn from_oidc_url(oidc_url: &str, audience: Option<&str>) -> Result<Self, JwksError> {
-        Self::from_oidc_url_with_client(&reqwest::Client::default(), oidc_url, audience).await
-    }
-
     /// A version of [`from_oidc_url`][Self::from_oidc_url] that allows for
     /// passing in a custom [`Client`][reqwest::Client].
     pub async fn from_oidc_url_with_client(
         client: &reqwest::Client,
         oidc_url: &str,
-        audience: Option<&str>,
+        audience: Option<String>,
     ) -> Result<Self, JwksError> {
         debug!(%oidc_url, "Fetching openid-configuration.");
         let oidc = client.get(oidc_url).send().await?.json::<Oid>().await?;
@@ -62,30 +48,12 @@ impl Jwks {
         Self::from_jwks_url_with_client(&reqwest::Client::default(), &jwks_uri, audience, alg).await
     }
 
-    ///
-    /// # Arguments
-    /// * `jwks_url` - The url which JWKS info is pulled from.
-    /// * `audience` - The identifier of the consumer of the JWT. This will be
-    ///   matched against the `aud` claim from the token.
-    /// * `alg` - The alg to use if not specified in JWK
-    ///
-    /// # Return Value
-    /// The information needed to decode JWTs using any of the keys specified in
-    /// the authority's JWKS.
-    pub async fn from_jwks_url(
-        jwks_url: &str,
-        audience: Option<&str>,
-        alg: Option<jsonwebtoken::Algorithm>,
-    ) -> Result<Self, JwksError> {
-        Self::from_jwks_url_with_client(&reqwest::Client::default(), jwks_url, audience, alg).await
-    }
-
     /// A version of [`from_jwks_url`][Self::from_jwks_url] that allows for
     /// passing in a custom [`Client`][reqwest::Client].
     pub async fn from_jwks_url_with_client(
         client: &reqwest::Client,
         jwks_url: &str,
-        audience: Option<&str>,
+        audience: Option<String>,
         alg: Option<jsonwebtoken::Algorithm>,
     ) -> Result<Self, JwksError> {
         debug!(%jwks_url, "Fetching JSON Web Key Set.");
@@ -111,7 +79,7 @@ impl Jwks {
     /// the authority's JWKS.
     pub fn from_jwk_set(
         jwk_set: jwk::JwkSet,
-        audience: Option<&str>,
+        audience: Option<String>,
         alg: Option<jsonwebtoken::Algorithm>,
     ) -> Result<Self, JwksError> {
         let mut keys = HashMap::new();
@@ -123,7 +91,6 @@ impl Jwks {
         for jwk in jwk_set.keys {
             if let Some(key_alg) = to_supported_alg(jwk.common.key_algorithm).or(alg) {
                 let kid = jwk.common.key_id.ok_or(JwkError::MissingKeyId)?;
-
                 match &jwk.algorithm {
                     AlgorithmParameters::RSA(rsa) => {
                         let decoding_key = DecodingKey::from_rsa_components(&rsa.n, &rsa.e)
@@ -132,12 +99,11 @@ impl Jwks {
                                 error: err,
                             })?;
                         let mut validation = Validation::new(key_alg);
-                        if let Some(audience) = audience {
+                        if let Some(ref audience) = audience {
                             validation.set_audience(&[audience.to_string()]);
                         } else {
                             validation.validate_aud = false;
                         }
-
                         keys.insert(
                             kid,
                             Jwk {
