@@ -1,0 +1,120 @@
+use std::sync::Arc;
+
+use crate::key_store::JwksError;
+use crate::{KeyStore, TokenError};
+use jsonwebtoken::{decode, decode_header, TokenData};
+use serde::de::DeserializeOwned;
+
+use tokio::time::{sleep, Duration};
+use tokio::{sync::Mutex, time::Instant};
+use tracing::{debug, error, info};
+
+#[derive(Clone)]
+pub struct KeyManager {
+    authority: String,
+    audience: String,
+    minimal_interval: Option<Duration>,
+    key_store: Arc<Mutex<KeyStore>>,
+}
+
+impl KeyManager {
+    /// Create a new KeyManager that fetches jwks into a KeyStore from an authority
+    ///
+    /// authority: either url of an openid_configuration or a jwks_url
+    ///
+    /// audience: to be check against the `aud` claim
+    ///
+    /// By default it only fetches jwks once
+    pub async fn new(authority: String, audience: String) -> Result<Self, JwksError> {
+        let client = reqwest::Client::default();
+        let key_store = match KeyStore::new(&client, &authority, &audience).await {
+            Ok(ks) => ks,
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            authority,
+            audience,
+            minimal_interval: None,
+            key_store: Arc::new(Mutex::new(key_store)),
+        })
+    }
+
+    /// When validating a token, update the KeyStore if the kid not found
+    ///
+    /// Do not update more often than `interval`
+    ///
+    pub fn with_minimal_update_interval(mut self, interval: u64) -> Self {
+        self.minimal_interval = Some(Duration::from_secs(interval));
+        self
+    }
+
+    /// Periodically update the KeyStore every `interval`
+    ///
+    pub fn with_periodical_update(self, interval: u64) -> Self {
+        let key_store = self.key_store.clone();
+        let url = self.authority.clone();
+        let audience = self.audience.clone();
+        tokio::spawn(async move {
+            let duration = Duration::from_secs(interval);
+            loop {
+                sleep(duration).await;
+                {
+                    let mut ks = key_store.lock().await;
+                    match KeyStore::new(&client, &url, &audience).await {
+                        Ok(new_ks) => {
+                            info!("Periodically updated jwks");
+                            *ks = new_ks
+                        }
+                        Err(e) => error!(?e, "Could not update jwks from: {}", url),
+                    }
+                }
+            }
+        });
+        self
+    }
+
+    /// Validate the token, require claims in `T` to be present
+    ///
+    /// Verify correct `aud` and `exp`
+    pub async fn validate_claims<T>(&self, token: &str) -> Result<TokenData<T>, TokenError>
+    where
+        T: DeserializeOwned,
+    {
+        let header = decode_header(token).map_err(|error| {
+            debug!(?error, "Received token with invalid header.");
+            TokenError::InvalidHeader(error)
+        })?;
+        let kid = header.kid.as_ref().ok_or_else(|| {
+            debug!(?header, "Header is missing the `kid` attribute.");
+            TokenError::MissingKeyId
+        })?;
+
+        let mut ks = self.key_store.lock().await;
+        if ks.keys.get(kid).is_none() {
+            if let Some(minimal_interval) = self.minimal_interval {
+                if ks.last_updated + minimal_interval < Instant::now() {
+                    let client = reqwest::Client::default();
+                    match KeyStore::new(&client, &self.authority, &self.audience).await {
+                        Ok(new_ks) => {
+                            info!("Updated jwks from: {}", &self.authority);
+                            *ks = new_ks
+                        }
+                        Err(e) => error!(?e, "Could not update jwks from: {}", self.authority),
+                    }
+                }
+            }
+        }
+        let key = ks.keys.get(kid).ok_or_else(|| {
+            debug!(%kid, "Token refers to an unknown key.");
+            TokenError::UnknownKeyId(kid.to_owned())
+        })?;
+
+        let decoded_token: TokenData<T> =
+            decode(token, &key.decoding, &key.validation).map_err(|error| {
+                debug!(?error, "Token is malformed or does not pass validation.");
+                TokenError::Invalid(error)
+            })?;
+
+        Ok(decoded_token)
+    }
+}
