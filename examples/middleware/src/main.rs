@@ -1,23 +1,30 @@
-use std::net::SocketAddr;
-
 use axum::{middleware, routing::get, Router};
 use axum_jwks::KeyManager;
+use reqwest::Client;
+use std::net::SocketAddr;
+use tracing::Level;
 
 mod auth;
 
 #[tokio::main]
 async fn main() {
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
     let key_manager = KeyManager::new(
         // The Authorization Server that signs the JWTs you want to consume.
-        "https://my-auth-server.example.com/.well-known/openid-configuration".to_string(),
+        "".to_string(),
         // The audience identifier for the application. This ensures that
         // JWTs are intended for this application.
-        "https://my-api-identifier.example.com/".to_string(),
+        "".to_string(),
     )
-    .await
-    .expect("Valid configuration")
-    .with_periodical_update(36000)
-    .with_minimal_update_interval(600);
+    // .with_periodical_update(36000)
+    .with_minimal_update_interval(2)
+    .with_client(Client::default());
+    // .update()
+    // .await
+    // .expect("Valid configuration");
 
     let state = auth::AppState { key_manager };
     let router = Router::new()

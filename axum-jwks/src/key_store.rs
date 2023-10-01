@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use jsonwebtoken::{
     jwk::{self, AlgorithmParameters},
@@ -11,10 +11,21 @@ use tokio::time::Instant;
 
 const DEFAULT_ALG: jsonwebtoken::Algorithm = jsonwebtoken::Algorithm::RS256;
 
+type Keys = HashMap<String, Jwk>;
+
 #[derive(Clone)]
 pub(crate) struct KeyStore {
     pub last_updated: Instant,
     pub keys: Keys,
+}
+
+impl Default for KeyStore {
+    fn default() -> Self {
+        Self {
+            last_updated: Instant::now() - Duration::from_secs(3600 * 24 * 365),
+            keys: Keys::default(),
+        }
+    }
 }
 
 impl KeyStore {
@@ -23,7 +34,6 @@ impl KeyStore {
         url: &str,
         audience: &str,
     ) -> Result<Self, JwksError> {
-        info!(?url, "getting");
         let (jwks_url, alg) = match client.get(url).send().await?.json::<Oidc>().await {
             Ok(oidc) => {
                 let jwks_uri = oidc.jwks_uri;
@@ -97,8 +107,6 @@ struct Oidc {
     jwks_uri: String,
     id_token_signing_alg_values_supported: Option<Vec<String>>,
 }
-
-type Keys = HashMap<String, Jwk>;
 
 #[derive(Clone)]
 pub struct Jwk {

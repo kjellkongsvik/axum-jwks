@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use crate::key_store::JwksError;
+use crate::key_store::{Jwk, JwksError};
 use crate::{KeyStore, TokenError};
 use jsonwebtoken::{decode, decode_header, TokenData};
 use serde::de::DeserializeOwned;
 
+use tokio::sync::RwLock;
+use tokio::time::Instant;
 use tokio::time::{sleep, Duration};
-use tokio::{sync::Mutex, time::Instant};
 use tracing::{debug, error, info};
 
 #[derive(Clone)]
@@ -14,7 +15,8 @@ pub struct KeyManager {
     authority: String,
     audience: String,
     minimal_interval: Option<Duration>,
-    key_store: Arc<Mutex<KeyStore>>,
+    key_store: Arc<RwLock<KeyStore>>,
+    client: reqwest::Client,
 }
 
 impl KeyManager {
@@ -25,21 +27,17 @@ impl KeyManager {
     /// audience: to be check against the `aud` claim
     ///
     /// By default it only fetches jwks once
-    pub async fn new(authority: String, audience: String) -> Result<Self, JwksError> {
-        let client = reqwest::Client::default();
-        let key_store = match KeyStore::new(&client, &authority, &audience).await {
-            Ok(ks) => ks,
-            Err(e) => return Err(e),
-        };
-        Ok(Self {
+    pub fn new(authority: String, audience: String) -> Self {
+        Self {
             authority,
             audience,
             minimal_interval: None,
-            key_store: Arc::new(Mutex::new(key_store)),
-        })
+            key_store: Arc::new(RwLock::new(KeyStore::default())),
+            client: reqwest::Client::default(),
+        }
     }
 
-    /// When validating a token, update the KeyStore if the kid not found
+    /// When validating a token, update the KeyStore if kid not found
     ///
     /// Do not update more often than `interval`
     ///
@@ -54,12 +52,13 @@ impl KeyManager {
         let key_store = self.key_store.clone();
         let url = self.authority.clone();
         let audience = self.audience.clone();
+        let client = self.client.clone();
         tokio::spawn(async move {
             let duration = Duration::from_secs(interval);
             loop {
                 sleep(duration).await;
                 {
-                    let mut ks = key_store.lock().await;
+                    let mut ks = key_store.write().await;
                     match KeyStore::new(&client, &url, &audience).await {
                         Ok(new_ks) => {
                             info!("Periodically updated jwks");
@@ -71,6 +70,19 @@ impl KeyManager {
             }
         });
         self
+    }
+
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    pub async fn update(self) -> Result<Self, JwksError> {
+        {
+            let mut ks = self.key_store.write().await;
+            *ks = KeyStore::new(&self.client, &self.authority, &self.audience).await?;
+        }
+        Ok(self)
     }
 
     /// Validate the token, require claims in `T` to be present
@@ -89,25 +101,7 @@ impl KeyManager {
             TokenError::MissingKeyId
         })?;
 
-        let mut ks = self.key_store.lock().await;
-        if ks.keys.get(kid).is_none() {
-            if let Some(minimal_interval) = self.minimal_interval {
-                if ks.last_updated + minimal_interval < Instant::now() {
-                    let client = reqwest::Client::default();
-                    match KeyStore::new(&client, &self.authority, &self.audience).await {
-                        Ok(new_ks) => {
-                            info!("Updated jwks from: {}", &self.authority);
-                            *ks = new_ks
-                        }
-                        Err(e) => error!(?e, "Could not update jwks from: {}", self.authority),
-                    }
-                }
-            }
-        }
-        let key = ks.keys.get(kid).ok_or_else(|| {
-            debug!(%kid, "Token refers to an unknown key.");
-            TokenError::UnknownKeyId(kid.to_owned())
-        })?;
+        let key = self.get_key(kid).await?;
 
         let decoded_token: TokenData<T> =
             decode(token, &key.decoding, &key.validation).map_err(|error| {
@@ -116,5 +110,35 @@ impl KeyManager {
             })?;
 
         Ok(decoded_token)
+    }
+
+    async fn get_key(&self, kid: &str) -> Result<Jwk, TokenError> {
+        let mut key = None;
+        {
+            let ks = self.key_store.read().await;
+            key = ks.keys.get(kid);
+        }
+        if key.is_none() {
+            let mut ks = self.key_store.write().await;
+            if let Some(minimal_interval) = self.minimal_interval {
+                if ks.last_updated + minimal_interval < Instant::now() {
+                    match KeyStore::new(&self.client, &self.authority, &self.audience).await {
+                        Ok(new_ks) => {
+                            info!("Updated jwks from: {}", &self.authority);
+                            *ks = new_ks
+                        }
+                        Err(e) => error!(?e, "Could not update jwks from: {}", self.authority),
+                    }
+                }
+            }
+            key = ks.keys.get(kid);
+        }
+        match key {
+            Some(k) => Ok(k.clone()),
+            _ => {
+                debug!(%kid, "Token refers to an unknown key.");
+                Err(TokenError::UnknownKeyId(kid.to_owned()))
+            }
+        }
     }
 }
