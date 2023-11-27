@@ -78,7 +78,7 @@ impl KeyStore {
                         })?;
                     let mut validation =
                         Validation::new(jwk.common.algorithm.or(alg).unwrap_or(DEFAULT_ALG));
-                    validation.set_audience(&[audience.clone()]);
+                    validation.set_audience(&[audience]);
 
                     keys.insert(
                         kid,
