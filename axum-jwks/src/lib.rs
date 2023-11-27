@@ -92,6 +92,6 @@ mod key_store;
 mod token;
 
 pub use claims::{Claims, ParseTokenClaims};
-pub use key_manager::KeyManager;
+pub use key_manager::{KeyManager, KeyManagerBuilder};
 use key_store::KeyStore;
 pub use token::{Token, TokenError};

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{collections::HashMap, str::FromStr};
 
 use jsonwebtoken::{
     jwk::{self, AlgorithmParameters},
@@ -15,14 +15,14 @@ type Keys = HashMap<String, Jwk>;
 
 #[derive(Clone)]
 pub(crate) struct KeyStore {
-    pub last_updated: Instant,
+    pub last_updated: Option<Instant>,
     pub keys: Keys,
 }
 
 impl Default for KeyStore {
     fn default() -> Self {
         Self {
-            last_updated: Instant::now() - Duration::from_secs(3600 * 24 * 365),
+            last_updated: None,
             keys: Keys::default(),
         }
     }
@@ -51,7 +51,7 @@ impl KeyStore {
         let keys = Self::from_jwks_url(client, &jwks_url, audience, alg).await?;
         Ok(Self {
             keys,
-            last_updated: Instant::now(),
+            last_updated: Some(Instant::now()),
         })
     }
 

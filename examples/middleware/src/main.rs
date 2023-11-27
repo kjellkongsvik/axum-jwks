@@ -1,5 +1,5 @@
 use axum::{middleware, routing::get, Router};
-use axum_jwks::KeyManager;
+use axum_jwks::KeyManagerBuilder;
 use reqwest::Client;
 use std::env;
 use std::net::SocketAddr;
@@ -13,16 +13,19 @@ async fn main() {
         .with_max_level(Level::DEBUG)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-    let key_manager = KeyManager::new(
+    let key_manager = KeyManagerBuilder::new(
         // The Authorization Server that signs the JWTs you want to consume.
         env::var("AUTHSERVER").unwrap(),
         // The audience identifier for the application. This ensures that
         // JWTs are intended for this application.
         env::var("AUDIENCE").unwrap(),
     )
-    .with_periodical_update(36000)
-    .with_minimal_update_interval(600)
-    .with_client(Client::default());
+    .periodical_update(36000)
+    .minimal_update_interval(600)
+    .client(Client::default())
+    .build()
+    .await
+    .unwrap();
 
     let state = auth::AppState { key_manager };
     let router = Router::new()
