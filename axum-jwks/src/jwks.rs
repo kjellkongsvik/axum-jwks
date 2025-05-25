@@ -5,7 +5,7 @@ use jsonwebtoken::{
     jwk::{self, AlgorithmParameters, KeyAlgorithm},
     DecodingKey, TokenData, Validation,
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -22,15 +22,15 @@ pub struct Jwks {
 
 impl Jwks {
     pub async fn from_jwks_url(
-        client: &reqwest::Client,
-        jwks_url: &str,
+        jwks_uri: &str,
         audience: Option<String>,
         alg: Option<jsonwebtoken::Algorithm>,
+        client: &reqwest::Client,
     ) -> Result<Self, JwksError> {
-        debug!(%jwks_url, "Fetching JSON Web Key Set.");
-        let jwks: jwk::JwkSet = client.get(jwks_url).send().await?.json().await?;
+        debug!(%jwks_uri, "Fetching JSON Web Key Set.");
+        let jwks: jwk::JwkSet = client.get(jwks_uri).send().await?.json().await?;
         info!(
-            %jwks_url,
+            %jwks_uri,
             count = jwks.keys.len(),
             "Successfully pulled JSON Web Key Set."
         );
@@ -155,9 +155,6 @@ pub enum JwksError {
 
     #[error("the provided algorithm from oidc is invalid or empty: {0}")]
     InvalidAlgorithm(#[from] jsonwebtoken::errors::Error),
-
-    #[error("ddd")]
-    InvalidData,
 }
 
 /// An error with a specific key from a JWKS.

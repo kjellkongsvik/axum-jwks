@@ -14,3 +14,4 @@ axum-jwks = { path = "../../axum-jwks" }
 axum-extra = { version = "0.10.0", features = ["typed-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+jsonwebtoken = "9.3.1"

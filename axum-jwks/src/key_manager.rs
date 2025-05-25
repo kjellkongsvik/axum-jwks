@@ -20,7 +20,7 @@ struct KeyStore {
 
 #[derive(Clone)]
 pub struct KeyManager {
-    url: String,
+    jwks_uri: String,
     audience: Option<String>,
     alg: Option<jsonwebtoken::Algorithm>,
     update_interval: Duration,
@@ -73,14 +73,19 @@ impl KeyManager {
     }
 
     pub async fn update_jwks(&self) -> Result<(), JwksError> {
-        let jwks =
-            Jwks::from_jwks_url(&self.client, &self.url, self.audience.clone(), self.alg).await?;
+        let jwks = Jwks::from_jwks_url(
+            &self.jwks_uri,
+            self.audience.clone(),
+            self.alg,
+            &self.client,
+        )
+        .await?;
 
         let last_updated = Some(Instant::now());
         let mut key_store = self.key_store.write().await;
         *key_store = KeyStore { last_updated, jwks };
 
-        info!("Updated jwks from: {}", &self.url);
+        info!("Updated jwks from: {}", &self.jwks_uri);
         Ok(())
     }
 }
@@ -89,6 +94,7 @@ impl KeyManager {
 pub struct KeyManagerBuilder {
     url: String,
     audience: Option<String>,
+    alg: Option<jsonwebtoken::Algorithm>,
     update_interval: Duration,
     client: reqwest::Client,
 }
@@ -107,6 +113,7 @@ impl KeyManagerBuilder {
         Self {
             url,
             audience,
+            alg: None,
             update_interval: Duration::from_secs(3600),
             client: reqwest::Client::default(),
         }
@@ -124,29 +131,32 @@ impl KeyManagerBuilder {
         self
     }
 
-    async fn from_url(
-        &self,
-        url: &str,
-    ) -> Result<(String, Option<jsonwebtoken::Algorithm>), JwksError> {
-        if let Ok(oidc) = self.client.get(url).send().await?.json::<Oid>().await {
-            let alg = match &oidc.id_token_signing_alg_values_supported {
-                Some(algs) => match algs.first() {
-                    Some(s) => Some(jsonwebtoken::Algorithm::from_str(s)?),
-                    _ => None,
-                },
-                _ => None,
-            };
-            return Ok((oidc.jwks_uri, alg));
-        } else {
-            return Ok((url.to_owned(), None));
-        }
+    pub fn set_alg(mut self, alg: jsonwebtoken::Algorithm) -> Self {
+        self.alg = Some(alg);
+        self
     }
 
     /// Build KeyManager with empty key_store
     pub async fn build(self) -> KeyManager {
-        let (url, alg) = self.from_url(&self.url).await.unwrap();
+        let mut alg = self.alg;
+        let mut jwks_uri = self.url.clone();
+        let r = self
+            .client
+            .get(&self.url)
+            .send()
+            .await
+            .expect("Valid url for either jwks_uri or well_known oidc");
+
+        if let Ok(oidc) = r.json::<Oid>().await {
+            alg = oidc.id_token_signing_alg_values_supported.and_then(|a| {
+                a.first()
+                    .and_then(|s| jsonwebtoken::Algorithm::from_str(s).ok())
+            });
+            jwks_uri = oidc.jwks_uri;
+        };
+
         KeyManager {
-            url,
+            jwks_uri,
             audience: self.audience,
             alg,
             update_interval: self.update_interval,
