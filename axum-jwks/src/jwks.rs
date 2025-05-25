@@ -27,16 +27,26 @@ struct Oid {
 }
 
 impl Jwks {
-    /// A version of [`from_oidc_url`][Self::from_oidc_url] that allows for
-    /// passing in a custom [`Client`][reqwest::Client].
-    pub async fn from_oidc_url_with_client(
+    pub async fn from_url(
         client: &reqwest::Client,
-        oidc_url: &str,
+        url: &str,
         audience: Option<String>,
     ) -> Result<Self, JwksError> {
-        debug!(%oidc_url, "Fetching openid-configuration.");
-        let oidc = client.get(oidc_url).send().await?.json::<Oid>().await?;
-        let jwks_uri = oidc.jwks_uri;
+        let t = client.get(url).send().await?.text().await?;
+        if let Ok(jwks) = serde_json::from_str(&t) {
+            return Self::from_jwk_set(jwks, audience, None);
+        }
+        if let Ok(oidc) = serde_json::from_str(&t) {
+            return Self::from_oidc(client, oidc, audience).await;
+        }
+        Err(JwksError::InvalidData)
+    }
+
+    async fn from_oidc(
+        client: &reqwest::Client,
+        oidc: Oid,
+        audience: Option<String>,
+    ) -> Result<Self, JwksError> {
         let alg = match &oidc.id_token_signing_alg_values_supported {
             Some(algs) => match algs.first() {
                 Some(s) => Some(jsonwebtoken::Algorithm::from_str(s)?),
@@ -45,12 +55,10 @@ impl Jwks {
             _ => None,
         };
 
-        Self::from_jwks_url_with_client(&reqwest::Client::default(), &jwks_uri, audience, alg).await
+        Self::from_jwks_url(client, &oidc.jwks_uri, audience, alg).await
     }
 
-    /// A version of [`from_jwks_url`][Self::from_jwks_url] that allows for
-    /// passing in a custom [`Client`][reqwest::Client].
-    pub async fn from_jwks_url_with_client(
+    async fn from_jwks_url(
         client: &reqwest::Client,
         jwks_url: &str,
         audience: Option<String>,
@@ -77,7 +85,7 @@ impl Jwks {
     /// # Return Value
     /// The information needed to decode JWTs using any of the keys specified in
     /// the authority's JWKS.
-    pub fn from_jwk_set(
+    fn from_jwk_set(
         jwk_set: jwk::JwkSet,
         audience: Option<String>,
         alg: Option<jsonwebtoken::Algorithm>,
@@ -184,6 +192,9 @@ pub enum JwksError {
 
     #[error("the provided algorithm from oidc is invalid or empty: {0}")]
     InvalidAlgorithm(#[from] jsonwebtoken::errors::Error),
+
+    #[error("ddd")]
+    InvalidData,
 }
 
 /// An error with a specific key from a JWKS.

@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{middleware, routing::get, Router};
 use axum_jwks::KeyManagerBuilder;
+use std::env;
 use tokio::net::TcpListener;
 
 mod auth;
@@ -14,11 +15,13 @@ async fn main() {
         .init();
     let key_manager = KeyManagerBuilder::new(
         // The Authorization Server that signs the JWTs you want to consume.
-        "https://my-auth-server.example.com/.well-known/openid-configuration".into(),
+        env::var("AUTHSERVER")
+            .expect("https://my-auth-server.example.com/.well-known/openid-configuration".into()),
         // The audience identifier for the application. This ensures that
         // JWTs are intended for this application.
-        Some("https://my-api-identifier.example.com/".into()),
+        Some(env::var("AUDIENCE").expect("https://my-api-identifier.example.com/".into())),
     )
+    .update_interval(std::time::Duration::from_secs(3))
     .build()
     .await;
 

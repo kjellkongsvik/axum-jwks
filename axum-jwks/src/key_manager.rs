@@ -42,40 +42,38 @@ impl KeyManager {
     {
         match self.key_store.read().await.jwks.validate_claims(token) {
             Err(TokenError::UnknownKeyId(id)) => {
-                info!("kid={id}, not found, might update jwks")
+                debug!("kid={id}, not found, should jwks be updated?")
             }
             Err(e) => return Err(e),
             Ok(d) => return Ok(d),
         }
-        self.ensure_updated().await?;
+        self.ensure_jwks_is_updated().await?;
         self.key_store.read().await.jwks.validate_claims(token)
     }
 
-    async fn ensure_updated(&self) -> Result<(), TokenError> {
+    async fn ensure_jwks_is_updated(&self) -> Result<(), TokenError> {
         {
             let key_store = self.key_store.read().await;
             if let Some(last_updated) = key_store.last_updated {
                 if last_updated + self.update_interval > Instant::now() {
-                    debug!("Not updating jwks yet");
+                    debug!("Will not be updating jwks yet");
                     return Ok(());
                 } else {
-                    debug!("jwks has not been updated in a while");
+                    debug!("jwks will be updated now");
                 }
             } else {
                 debug!("Initial jwks update");
             }
         }
-        self.update().await?;
+        self.update_jwks().await?;
         Ok(())
     }
 
-    async fn update(&self) -> Result<(), JwksError> {
-        let mut key_store = self.key_store.write().await;
-        let jwks =
-            Jwks::from_oidc_url_with_client(&self.client, &self.authority, self.audience.clone())
-                .await?;
+    pub async fn update_jwks(&self) -> Result<(), JwksError> {
+        let jwks = Jwks::from_url(&self.client, &self.authority, self.audience.clone()).await?;
 
         let last_updated = Some(Instant::now());
+        let mut key_store = self.key_store.write().await;
         *key_store = KeyStore { last_updated, jwks };
 
         info!("Updated jwks from: {}", &self.authority);
@@ -89,7 +87,7 @@ pub struct KeyManagerBuilder {
     audience: Option<String>,
     update_interval: Duration,
     key_store: Arc<RwLock<KeyStore>>,
-    client: reqwest::Client,
+    client: Option<reqwest::Client>,
 }
 
 impl KeyManagerBuilder {
@@ -102,7 +100,7 @@ impl KeyManagerBuilder {
             audience,
             update_interval: Duration::from_secs(3600),
             key_store: Arc::new(RwLock::new(KeyStore::default())),
-            client: reqwest::Client::default(),
+            client: None,
         }
     }
 
@@ -114,18 +112,18 @@ impl KeyManagerBuilder {
 
     /// Enables usage with externally provided `client`
     pub fn client(mut self, client: reqwest::Client) -> Self {
-        self.client = client;
+        self.client = Some(client);
         self
     }
 
-    /// build KeyManager with empty key_store
+    /// Build KeyManager with empty key_store
     pub async fn build(self) -> KeyManager {
         KeyManager {
             authority: self.authority,
             audience: self.audience,
             update_interval: self.update_interval,
             key_store: self.key_store,
-            client: self.client,
+            client: self.client.unwrap_or(reqwest::Client::default()),
         }
     }
 }
