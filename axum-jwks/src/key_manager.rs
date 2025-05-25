@@ -131,7 +131,7 @@ impl KeyManagerBuilder {
         self
     }
 
-    pub fn set_alg(mut self, alg: jsonwebtoken::Algorithm) -> Self {
+    pub fn algorithm(mut self, alg: jsonwebtoken::Algorithm) -> Self {
         self.alg = Some(alg);
         self
     }

@@ -22,7 +22,7 @@ async fn main() {
         Some(env::var("AUDIENCE").expect("https://my-api-identifier.example.com/".into())),
     )
     .update_interval(std::time::Duration::from_secs(3))
-    .set_alg(jsonwebtoken::Algorithm::RS256)
+    .algorithm(jsonwebtoken::Algorithm::RS256)
     .build()
     .await;
 

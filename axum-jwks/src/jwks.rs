@@ -111,6 +111,7 @@ impl Jwks {
 
             TokenError::InvalidHeader(error)
         })?;
+
         let kid = header.kid.as_ref().ok_or_else(|| {
             debug!(?header, "Header is missing the `kid` attribute.");
 
