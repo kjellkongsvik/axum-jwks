@@ -20,45 +20,8 @@ pub struct Jwks {
     keys: HashMap<String, Jwk>,
 }
 
-#[derive(Deserialize)]
-struct Oid {
-    jwks_uri: String,
-    id_token_signing_alg_values_supported: Option<Vec<String>>,
-}
-
 impl Jwks {
-    pub async fn from_url(
-        client: &reqwest::Client,
-        url: &str,
-        audience: Option<String>,
-    ) -> Result<Self, JwksError> {
-        let t = client.get(url).send().await?.text().await?;
-        if let Ok(jwks) = serde_json::from_str(&t) {
-            return Self::from_jwk_set(jwks, audience, None);
-        }
-        if let Ok(oidc) = serde_json::from_str(&t) {
-            return Self::from_oidc(client, oidc, audience).await;
-        }
-        Err(JwksError::InvalidData)
-    }
-
-    async fn from_oidc(
-        client: &reqwest::Client,
-        oidc: Oid,
-        audience: Option<String>,
-    ) -> Result<Self, JwksError> {
-        let alg = match &oidc.id_token_signing_alg_values_supported {
-            Some(algs) => match algs.first() {
-                Some(s) => Some(jsonwebtoken::Algorithm::from_str(s)?),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        Self::from_jwks_url(client, &oidc.jwks_uri, audience, alg).await
-    }
-
-    async fn from_jwks_url(
+    pub async fn from_jwks_url(
         client: &reqwest::Client,
         jwks_url: &str,
         audience: Option<String>,

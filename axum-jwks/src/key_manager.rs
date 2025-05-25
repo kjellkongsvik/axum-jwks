@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::jwks::JwksError;
@@ -5,6 +6,7 @@ use crate::{Jwks, TokenError};
 use jsonwebtoken::TokenData;
 use serde::de::DeserializeOwned;
 
+use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use tokio::time::{Duration, Instant};
@@ -18,8 +20,9 @@ struct KeyStore {
 
 #[derive(Clone)]
 pub struct KeyManager {
-    authority: String,
+    url: String,
     audience: Option<String>,
+    alg: Option<jsonwebtoken::Algorithm>,
     update_interval: Duration,
     key_store: Arc<RwLock<KeyStore>>,
     client: reqwest::Client,
@@ -70,37 +73,42 @@ impl KeyManager {
     }
 
     pub async fn update_jwks(&self) -> Result<(), JwksError> {
-        let jwks = Jwks::from_url(&self.client, &self.authority, self.audience.clone()).await?;
+        let jwks =
+            Jwks::from_jwks_url(&self.client, &self.url, self.audience.clone(), self.alg).await?;
 
         let last_updated = Some(Instant::now());
         let mut key_store = self.key_store.write().await;
         *key_store = KeyStore { last_updated, jwks };
 
-        info!("Updated jwks from: {}", &self.authority);
+        info!("Updated jwks from: {}", &self.url);
         Ok(())
     }
 }
 
 #[derive(Clone, Default)]
 pub struct KeyManagerBuilder {
-    authority: String,
+    url: String,
     audience: Option<String>,
     update_interval: Duration,
-    key_store: Arc<RwLock<KeyStore>>,
-    client: Option<reqwest::Client>,
+    client: reqwest::Client,
+}
+
+#[derive(Deserialize)]
+struct Oid {
+    jwks_uri: String,
+    id_token_signing_alg_values_supported: Option<Vec<String>>,
 }
 
 impl KeyManagerBuilder {
     /// Create a new KeyManager that can fetch jwks from an authority
-    /// `authority`: either url of an openid_configuration or a jwks_url
+    /// `url`: either url of an openid_configuration or a jwks_url
     /// `audience`: to be checked against the `aud` claim
-    pub fn new(authority: String, audience: Option<String>) -> Self {
+    pub fn new(url: String, audience: Option<String>) -> Self {
         Self {
-            authority,
+            url,
             audience,
             update_interval: Duration::from_secs(3600),
-            key_store: Arc::new(RwLock::new(KeyStore::default())),
-            client: None,
+            client: reqwest::Client::default(),
         }
     }
 
@@ -112,18 +120,38 @@ impl KeyManagerBuilder {
 
     /// Enables usage with externally provided `client`
     pub fn client(mut self, client: reqwest::Client) -> Self {
-        self.client = Some(client);
+        self.client = client;
         self
+    }
+
+    async fn from_url(
+        &self,
+        url: &str,
+    ) -> Result<(String, Option<jsonwebtoken::Algorithm>), JwksError> {
+        if let Ok(oidc) = self.client.get(url).send().await?.json::<Oid>().await {
+            let alg = match &oidc.id_token_signing_alg_values_supported {
+                Some(algs) => match algs.first() {
+                    Some(s) => Some(jsonwebtoken::Algorithm::from_str(s)?),
+                    _ => None,
+                },
+                _ => None,
+            };
+            return Ok((oidc.jwks_uri, alg));
+        } else {
+            return Ok((url.to_owned(), None));
+        }
     }
 
     /// Build KeyManager with empty key_store
     pub async fn build(self) -> KeyManager {
+        let (url, alg) = self.from_url(&self.url).await.unwrap();
         KeyManager {
-            authority: self.authority,
+            url,
             audience: self.audience,
+            alg,
             update_interval: self.update_interval,
-            key_store: self.key_store,
-            client: self.client.unwrap_or(reqwest::Client::default()),
+            key_store: Arc::new(RwLock::new(KeyStore::default())),
+            client: self.client,
         }
     }
 }
